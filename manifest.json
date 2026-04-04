@@ -1,0 +1,9 @@
+{
+  "id": "cryptosync",
+  "name": "CryptoSync",
+  "version": "1.0.0",
+  "minAppVersion": "0.12.0",
+  "description": "Cifra tu vault completo y lo sincroniza con la nube.",
+  "author": "Nabrick",
+  "main": "main.js"
+}

@@ -1,0 +1,242 @@
+/* styles.css */
+
+.modal .cryptosync-title {
+  font-size: 1.2rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  margin-bottom: 4px;
+}
+
+.modal .cryptosync-subtitle {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  margin-bottom: 20px;
+}
+
+.cryptosync-progress {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 16px 0;
+  text-align: center;
+}
+
+.cryptosync-progress p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.cryptosync-spinner {
+  font-size: 2rem;
+  animation: cryptosync-spin 1.5s linear infinite;
+}
+
+@keyframes cryptosync-spin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.cryptosync-status {
+  font-size: 1rem;
+  font-weight: 500;
+  color: var(--text-normal);
+}
+
+.cryptosync-status.success { color: var(--color-green); }
+.cryptosync-status.error   { color: var(--color-red);   }
+
+.cryptosync-confirm-message {
+  font-size: 0.9rem;
+  color: var(--text-muted);
+  margin-bottom: 16px;
+  line-height: 1.5;
+}
+
+.cryptosync-settings-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 0 20px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  margin-bottom: 20px;
+}
+
+.cryptosync-settings-icon {
+  font-size: 2rem;
+  line-height: 1;
+}
+
+.cryptosync-settings-title {
+  font-size: 1.2rem;
+  font-weight: 700;
+  color: var(--text-normal);
+}
+
+.cryptosync-settings-subtitle {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+  font-family: var(--font-monospace);
+}
+
+.cryptosync-section-heading {
+  font-size: 0.75rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin: 24px 0 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.cryptosync-card {
+  background: var(--background-secondary);
+  border-radius: 8px;
+  padding: 4px 12px 12px;
+  margin-bottom: 8px;
+}
+
+.cryptosync-action-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  justify-content: flex-end;
+}
+
+.cryptosync-btn-primary {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border: none;
+  transition: opacity 0.15s ease;
+}
+
+.cryptosync-btn-primary:hover { opacity: 0.85; }
+
+.cryptosync-btn-secondary {
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--background-modifier-border);
+  transition: all 0.15s ease;
+}
+
+.cryptosync-btn-secondary:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.cryptosync-conn-status {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  min-height: 18px;
+  margin-top: 8px;
+  transition: color 0.2s;
+}
+
+.cryptosync-conn-status.cryptosync-status-ok    { color: var(--color-green); }
+.cryptosync-conn-status.cryptosync-status-error { color: var(--color-red);   }
+
+.cryptosync-expiry {
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  margin-top: 8px;
+}
+
+.cryptosync-expiry-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.85rem;
+}
+
+.cryptosync-expiry-text { color: var(--text-muted); }
+
+.cryptosync-warning {
+  color: var(--color-orange);
+  font-weight: 500;
+}
+
+.cryptosync-backup-status {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px;
+  background: var(--background-primary);
+  border-radius: 6px;
+  border: 1px solid var(--background-modifier-border);
+  margin: 8px 0 12px;
+}
+
+.cryptosync-backup-icon {
+  font-size: 1.8rem;
+  line-height: 1;
+  flex-shrink: 0;
+}
+
+.cryptosync-backup-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cryptosync-backup-label {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text-normal);
+}
+
+.cryptosync-backup-date {
+  font-size: 0.8rem;
+  font-family: var(--font-monospace);
+  color: var(--text-accent);
+}
+
+.cryptosync-backup-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+
+.cryptosync-backup-desc {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0 0 8px;
+  padding: 0 2px;
+}
+
+.cryptosync-btn-full {
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px 0;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 500;
+  cursor: pointer;
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  border: none;
+  transition: opacity 0.15s ease;
+}
+
+.cryptosync-btn-full:hover { opacity: 0.85; }
+
+.cryptosync-status-line {
+  font-size: 0.85rem;
+  padding: 6px 0;
+  color: var(--text-muted);
+}
