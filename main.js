@@ -27,8 +27,8 @@ async function deriveKey(passphrase, salt) {
 
 async function encryptBuffer(passphrase, plainBuffer) {
   const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
-  const iv   = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
-  const key  = await deriveKey(passphrase, salt);
+  const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
+  const key = await deriveKey(passphrase, salt);
 
   const ciphertext = await crypto.subtle.encrypt(
     { name: "AES-GCM", iv },
@@ -38,17 +38,17 @@ async function encryptBuffer(passphrase, plainBuffer) {
 
   const result = new Uint8Array(SALT_LENGTH + IV_LENGTH + ciphertext.byteLength);
   result.set(salt, 0);
-  result.set(iv,   SALT_LENGTH);
+  result.set(iv, SALT_LENGTH);
   result.set(new Uint8Array(ciphertext), SALT_LENGTH + IV_LENGTH);
   return result.buffer;
 }
 
 async function decryptBuffer(passphrase, encryptedBuffer) {
-  const data       = new Uint8Array(encryptedBuffer);
-  const salt       = data.slice(0, SALT_LENGTH);
-  const iv         = data.slice(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
+  const data = new Uint8Array(encryptedBuffer);
+  const salt = data.slice(0, SALT_LENGTH);
+  const iv = data.slice(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
   const ciphertext = data.slice(SALT_LENGTH + IV_LENGTH);
-  const key        = await deriveKey(passphrase, salt);
+  const key = await deriveKey(passphrase, salt);
 
   return crypto.subtle.decrypt({ name: "AES-GCM", iv }, key, ciphertext);
 }
@@ -62,12 +62,32 @@ async function verifyPassphrase(passphrase, encryptedBuffer) {
   }
 }
 
+// Sección: Credenciales cifradas
+// Cifra solo los campos sensibles de Azure con la passphrase del vault.
+// El resto de data.json (checksums, lastBackup, etc.) permanece en claro.
+async function encryptCredentials(passphrase, creds) {
+  const plain = new TextEncoder().encode(JSON.stringify(creds));
+  const buf = await encryptBuffer(passphrase, plain);
+  const bytes = new Uint8Array(buf);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+  return btoa(binary);
+}
+
+async function decryptCredentials(passphrase, b64) {
+  const binary = atob(b64);
+  const buf = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) buf[i] = binary.charCodeAt(i);
+  const plain = await decryptBuffer(passphrase, buf.buffer);
+  return JSON.parse(new TextDecoder().decode(plain));
+}
+
 // Sección: Storage Providers
 // Interface: uploadFile | downloadFile | listFiles | deleteFile
 class AzureProvider {
   constructor(storageAccount, container, sasToken) {
     this.base = `https://${storageAccount}.blob.core.windows.net/${container}`;
-    this.sas  = sasToken.startsWith("?") ? sasToken : `?${sasToken}`;
+    this.sas = sasToken.startsWith("?") ? sasToken : `?${sasToken}`;
   }
 
   async uploadFile(hashedPath, buffer) {
@@ -137,8 +157,8 @@ const CANARY_TEXT = "vaultsync-ok";
 const ENCRYPT_EXTENSIONS = [".md", ".png", ".pdf", ".jpeg", ".jpg", ".mp4"];
 
 // Sección: Checksums
-const CHECKSUMS_AZURE_KEY     = "cryptosync-checksums.enc";
-const CHECKSUMS_AZURE_KEY_OLD = "cryptosync-checksums.json"; // legacy — migración automática
+const CHECKSUMS_AZURE_KEY = "cryptosync-checksums.enc";
+const CHECKSUMS_AZURE_KEY_OLD = "cryptosync-checksums.json";
 
 async function hashContent(buffer) {
   const digest = await crypto.subtle.digest("SHA-256", buffer);
@@ -148,7 +168,7 @@ async function hashContent(buffer) {
 async function listAllFiles(adapter, dir = "") {
   try {
     const result = await adapter.list(dir);
-    let files    = [...result.files];
+    let files = [...result.files];
     for (const folder of result.folders) {
       const children = await listAllFiles(adapter, folder);
       files = files.concat(children);
@@ -168,33 +188,60 @@ function shouldEncrypt(path) {
 }
 
 async function hashSegment(segment) {
-  const buf    = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(segment));
-  const hex    = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
+  const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(segment));
+  const hex = Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, "0")).join("");
   return hex.slice(0, 16);
 }
 
 async function hashPath(originalPath) {
   const segments = originalPath.split("/");
-  const hashed   = await Promise.all(segments.map(hashSegment));
+  const hashed = await Promise.all(segments.map(hashSegment));
   return hashed.join("/") + ".enc";
 }
 
 class VaultSyncPlugin extends Plugin {
   passphrase = null;
-  storage    = null;
+  storage = null;
 
   async loadConfig() {
     try {
       const config = await this.loadData() || {};
-      if (!config.storageAccount || !config.container || !config.sasToken) {
+
+      let storageAccount, container, sasToken;
+
+      if (config.encryptedCredentials) {
+        if (!this.passphrase) {
+          console.log("CryptoSync: credenciales cifradas — esperando passphrase");
+          return false;
+        }
+        try {
+          const creds    = await decryptCredentials(this.passphrase, config.encryptedCredentials);
+          storageAccount = creds.storageAccount;
+          container      = creds.container;
+          sasToken       = creds.sasToken;
+        } catch (e) {
+          console.error("CryptoSync: error descifrando credenciales", e);
+          return false;
+        }
+      } else if (config.storageAccount) {
+        storageAccount = config.storageAccount;
+        container      = config.container;
+        sasToken       = config.sasToken;
+        if (this.passphrase) {
+          console.log("CryptoSync: migrando credenciales a formato cifrado...");
+          await this.saveCredentials({ storageAccount, container, sasToken });
+          console.log("CryptoSync: migración de credenciales completada ✓");
+        }
+      } else {
         console.log("CryptoSync: config vacío, Azure desactivado");
         return false;
       }
-      this.storage = new AzureProvider(
-        config.storageAccount,
-        config.container,
-        config.sasToken
-      );
+
+      if (!storageAccount || !container || !sasToken) return false;
+
+      this.cachedCreds    = { storageAccount, container, sasToken };
+      this.cachedSasToken = sasToken;
+      this.storage        = new AzureProvider(storageAccount, container, sasToken);
       this.localChecksums = config.localChecksums || {};
       console.log("CryptoSync: Azure configurado");
       return true;
@@ -202,6 +249,20 @@ class VaultSyncPlugin extends Plugin {
       console.error("CryptoSync: error leyendo config", e);
       return false;
     }
+  }
+
+  async saveCredentials(creds) {
+    if (!this.passphrase) throw new Error("Vault bloqueado — ingresa tu passphrase primero");
+    const config = await this.loadData() || {};
+    config.encryptedCredentials = await encryptCredentials(this.passphrase, creds);
+
+    delete config.storageAccount;
+    delete config.container;
+    delete config.sasToken;
+    await this.saveData(config);
+
+    this.cachedCreds    = creds;
+    this.cachedSasToken = creds.sasToken;
   }
 
   // Checksums
@@ -218,18 +279,15 @@ class VaultSyncPlugin extends Plugin {
   async loadRemoteChecksums() {
     if (!this.passphrase) { this.remoteChecksums = {}; return; }
     try {
-      // Intentar nuevo formato cifrado (.enc)
-      const buf   = await this.storage.downloadFile(CHECKSUMS_AZURE_KEY);
+      const buf = await this.storage.downloadFile(CHECKSUMS_AZURE_KEY);
       const plain = await decryptBuffer(this.passphrase, buf);
       this.remoteChecksums = JSON.parse(new TextDecoder().decode(plain));
     } catch {
-      // Fallback: migración desde formato legacy en claro (.json)
       try {
         const buf  = await this.storage.downloadFile(CHECKSUMS_AZURE_KEY_OLD);
         const text = new TextDecoder().decode(buf);
         this.remoteChecksums = JSON.parse(text);
         console.log("CryptoSync: migrando checksums a formato cifrado...");
-        // Re-subir cifrado y eliminar el legacy
         await this.saveRemoteChecksums();
         await this.storage.deleteFile(CHECKSUMS_AZURE_KEY_OLD).catch(() => {});
         console.log("CryptoSync: migración de checksums completada ✓");
@@ -242,8 +300,8 @@ class VaultSyncPlugin extends Plugin {
   async saveRemoteChecksums() {
     if (!this.passphrase) return;
     try {
-      const text      = JSON.stringify(this.remoteChecksums);
-      const plain     = new TextEncoder().encode(text);
+      const text = JSON.stringify(this.remoteChecksums);
+      const plain = new TextEncoder().encode(text);
       const encrypted = await encryptBuffer(this.passphrase, plain);
       await this.storage.uploadFile(CHECKSUMS_AZURE_KEY, encrypted);
     } catch (e) {
@@ -275,9 +333,9 @@ class VaultSyncPlugin extends Plugin {
     });
 
     this.app.workspace.onLayoutReady(async () => {
+      await this.askPassphrase();
       await this.loadConfig();
       this.checkTokenExpiry();
-      this.askPassphrase();
     });
   }
 
@@ -297,7 +355,7 @@ class VaultSyncPlugin extends Plugin {
 
   async createCanary(passphrase) {
     await this.app.vault.adapter.mkdir(CRYPTOSYNC_DIR);
-    const plain     = new TextEncoder().encode(CANARY_TEXT);
+    const plain = new TextEncoder().encode(CANARY_TEXT);
     const encrypted = await encryptBuffer(passphrase, plain);
     await this.app.vault.adapter.writeBinary(CANARY_PATH, encrypted);
     console.log("CryptoSync: canary creado");
@@ -306,8 +364,8 @@ class VaultSyncPlugin extends Plugin {
   async checkCanary(passphrase) {
     try {
       const encrypted = await this.app.vault.adapter.readBinary(CANARY_PATH);
-      const plain     = await decryptBuffer(passphrase, encrypted);
-      const text      = new TextDecoder().decode(plain);
+      const plain = await decryptBuffer(passphrase, encrypted);
+      const text = new TextDecoder().decode(plain);
       return text === CANARY_TEXT;
     } catch {
       return false;
@@ -354,35 +412,36 @@ class VaultSyncPlugin extends Plugin {
   }
 
   checkTokenExpiry() {
-    this.loadData().then(config => {
-      if (!config) return;
-      const match = config.sasToken?.match(/se=([^&]+)/);
-      if (!match) return;
+    const sasToken = this.cachedSasToken;
+    if (!sasToken) return;
+    const match = sasToken.match(/se=([^&]+)/);
+    if (!match) return;
 
-      const expiry = new Date(decodeURIComponent(match[1]));
-      const days   = Math.ceil((expiry - new Date()) / (1000 * 60 * 60 * 24));
+    const expiry = new Date(decodeURIComponent(match[1]));
+    const days   = Math.ceil((expiry - new Date()) / (1000 * 60 * 60 * 24));
 
-      if (days <= 0) {
-        new Notice("🔴 CryptoSync: tu SAS token ha vencido — renuévalo en Azure Portal", 10000);
-      } else if (days <= 3) {
-        new Notice(`🔴 CryptoSync: token vence en ${days} días — ¡renueva ahora!`, 10000);
-      } else if (days <= 5) {
-        new Notice(`🟠 CryptoSync: token vence en ${days} días — renueva pronto`, 8000);
-      } else if (days <= 10) {
-        new Notice(`🟡 CryptoSync: token vence en ${days} días`, 5000);
-      }
-    }).catch(() => {});
+    if (days <= 0) {
+      new Notice("🔴 CryptoSync: tu SAS token ha vencido — renuévalo en Azure Portal", 10000);
+    } else if (days <= 3) {
+      new Notice(`🔴 CryptoSync: token vence en ${days} días — ¡renueva ahora!`, 10000);
+    } else if (days <= 5) {
+      new Notice(`🟠 CryptoSync: token vence en ${days} días — renueva pronto`, 8000);
+    } else if (days <= 10) {
+      new Notice(`🟡 CryptoSync: token vence en ${days} días`, 5000);
+    }
   }
 
-  pathMap        = {};
-  dirtyFiles     = new Set();
-  localChecksums  = {}; 
+  pathMap = {};
+  dirtyFiles = new Set();
+  localChecksums = {};
   remoteChecksums = {};
+  cachedCreds = null;
+  cachedSasToken  = null;
 
   async saveMap() {
     await this.app.vault.adapter.mkdir(CRYPTOSYNC_DIR);
-    const json      = JSON.stringify(this.pathMap);
-    const plain     = new TextEncoder().encode(json);
+    const json = JSON.stringify(this.pathMap);
+    const plain = new TextEncoder().encode(json);
     const encrypted = await encryptBuffer(this.passphrase, plain);
     await this.app.vault.adapter.writeBinary(MAP_LOCAL, encrypted);
   }
@@ -392,8 +451,8 @@ class VaultSyncPlugin extends Plugin {
     if (!exists) { this.pathMap = {}; return; }
     try {
       const encrypted = await this.app.vault.adapter.readBinary(MAP_LOCAL);
-      const plain     = await decryptBuffer(this.passphrase, encrypted);
-      this.pathMap    = JSON.parse(new TextDecoder().decode(plain));
+      const plain = await decryptBuffer(this.passphrase, encrypted);
+      this.pathMap = JSON.parse(new TextDecoder().decode(plain));
     } catch (e) {
       console.error("CryptoSync: error cargando mapa", e);
       this.pathMap = {};
@@ -415,7 +474,6 @@ class VaultSyncPlugin extends Plugin {
   }
 
   // Reintenta subir archivos pendientes después de un fallo de conexión.
-  // Usa un timer único: si ya hay un retry programado, no apila otro.
   scheduleRetry() {
     if (this._retryTimer) return;
     this._retryTimer = setTimeout(async () => {
@@ -425,10 +483,9 @@ class VaultSyncPlugin extends Plugin {
       try {
         await this.uploadDirtyFiles();
       } catch {
-        // Sin conexión todavía, se reintentará en la próxima modificación de archivo
         console.warn("CryptoSync: retry fallido, se reintentará en la próxima edición");
       }
-    }, 30_000); // reintentar a los 30 segundos
+    }, 30_000);
   }
 
   async showLockAndCloseModal() {
@@ -539,6 +596,8 @@ class VaultSyncPlugin extends Plugin {
         if (localHash) this.remoteChecksums[hashedPath] = localHash;
 
         this.dirtyFiles.delete(hashedPath);
+        // .enc subido — eliminar copia local para mantener vault limpio
+        await this.app.vault.adapter.remove(hashedPath).catch(() => {});
         uploaded++;
       } catch (e) {
         console.error(`CryptoSync: error subiendo ${hashedPath}`, e);
@@ -558,6 +617,7 @@ class VaultSyncPlugin extends Plugin {
     if (uploaded > 0) {
       await this.saveRemoteChecksums();
       await this.saveLocalChecksums();
+      await this.removeEmptyFolders();
     }
     new Notice(`CryptoSync: ${uploaded} archivo(s) subidos ✓`);
     return uploaded;
@@ -762,13 +822,20 @@ class VaultSyncPlugin extends Plugin {
             await this.storage.uploadFile(hashedPath, encBuffer);
             this.remoteChecksums[hashedPath] = contentHash;
             await this.saveRemoteChecksums();
+            // .enc subido — ya no necesita vivir en disco mientras el vault está abierto
+            await this.app.vault.adapter.remove(hashedPath);
+            await this.removeEmptyFolders();
             new Notice("↑ Sincronizado con Azure", 3000);
           } catch (uploadErr) {
             console.warn(`CryptoSync: sin conexión, encolando para retry → ${hashedPath}`);
             this.dirtyFiles.add(hashedPath);
             this.scheduleRetry();
+            // No eliminar el .enc — uploadDirtyFiles lo necesitará para el retry
           }
         } else {
+          // Remoto ya está actualizado — el .enc local tampoco es necesario
+          await this.app.vault.adapter.remove(hashedPath).catch(() => {});
+          await this.removeEmptyFolders();
           console.log(`CryptoSync: remoto ya actualizado, saltando subida → ${hashedPath}`);
         }
       }
@@ -786,21 +853,21 @@ class VaultSyncPlugin extends Plugin {
   async rotatePassphrase(oldPassphrase, newPassphrase) {
     if (!this.passphrase) throw new Error("Vault bloqueado");
     if (oldPassphrase !== this.passphrase) throw new Error("Passphrase actual incorrecta");
-    if (!newPassphrase)                    throw new Error("La nueva passphrase no puede estar vacía");
-    if (newPassphrase === oldPassphrase)   throw new Error("La nueva passphrase debe ser diferente a la actual");
+    if (!newPassphrase) throw new Error("La nueva passphrase no puede estar vacía");
+    if (newPassphrase === oldPassphrase) throw new Error("La nueva passphrase debe ser diferente a la actual");
 
     // 1. Actualizar passphrase en memoria
     this.passphrase = newPassphrase;
 
-    // 2. Recrear canary con nueva passphrase
+    if (this.cachedCreds) {
+      await this.saveCredentials(this.cachedCreds);
+    }
+
     const plain     = new TextEncoder().encode(CANARY_TEXT);
     const encrypted = await encryptBuffer(this.passphrase, plain);
     await this.app.vault.adapter.writeBinary(CANARY_PATH, encrypted);
 
-    // 3. Re-cifrar y subir todo con nueva passphrase (encryptVault usa this.passphrase)
     await this.encryptVault();
-
-    // 4. Volver a descifrar para que el usuario pueda seguir trabajando
     await this.decryptVaultLocal();
 
     console.log("CryptoSync: passphrase rotada ✓");
@@ -910,8 +977,8 @@ class PassphraseModal extends Modal {
   constructor(app, isFirstTime, onSubmit, onDismiss) {
     super(app);
     this.isFirstTime = isFirstTime;
-    this.onSubmit    = onSubmit;
-    this.onDismiss   = onDismiss;
+    this.onSubmit = onSubmit;
+    this.onDismiss = onDismiss;
   }
 
   onOpen() {
@@ -1099,8 +1166,11 @@ class CryptoSyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    let config = { storageAccount: "", container: "", sasToken: "" };
-    try { config = (await this.plugin.loadData()) || config; } catch {}
+    let config = {
+      storageAccount: this.plugin.cachedCreds?.storageAccount || "",
+      container:      this.plugin.cachedCreds?.container      || "",
+      sasToken:       this.plugin.cachedCreds?.sasToken        || ""
+    };
     this._currentToken = config.sasToken;
     let showToken = false;
 
@@ -1138,7 +1208,7 @@ class CryptoSyncSettingTab extends PluginSettingTab {
     let tokenInput;
     new Setting(azureCard)
       .setName("SAS Token")
-      .setDesc("Token de acceso compartido (se guarda localmente, nunca en la nube)")
+      .setDesc("Token de acceso compartido (se cifra con tu passphrase, nunca se guarda en claro)")
       .addText(text => {
         tokenInput = text;
         text.inputEl.type = "password";
@@ -1204,7 +1274,11 @@ class CryptoSyncSettingTab extends PluginSettingTab {
     });
     saveBtn.addEventListener("click", async () => {
       try {
-        await this.plugin.saveData(config);
+        await this.plugin.saveCredentials({
+          storageAccount: config.storageAccount,
+          container:      config.container,
+          sasToken:       config.sasToken
+        });
         await this.plugin.loadConfig();
         saveBtn.setText("✓ Guardado");
         setTimeout(() => saveBtn.setText("Guardar configuración"), 2000);

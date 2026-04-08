@@ -1,4 +1,4 @@
-[![Version](https://img.shields.io/badge/version-1.0.0-lightgrey.svg)]()
+[![Version](https://img.shields.io/badge/version-1.1.0-lightgrey.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)]()
 [![Status](https://img.shields.io/badge/status-active-lightgrey.svg)]()
 
@@ -14,7 +14,7 @@ Los archivos en la nube son completamente ilegibles sin tu passphrase.
 
 - **Cifrado AES-GCM 256 bits** con derivación de clave PBKDF2-SHA256 (250.000 iteraciones)
 - **Nombres de archivos hasheados** nadie sabe qué contiene cada archivo ni cómo se llama
-- **Passphrase en memoria** nunca se guarda en disco ni en la nube
+- **Passphrase en memoria** nunca se guarda en disco ni en la nube · credenciales Azure cifradas con tu passphrase
 - **Sincronización con Azure Blob Storage** solo archivos `.enc`, la nube nunca ve contenido en claro
 - **Debounce 60s** cifra y sube a Azure automáticamente mientras trabajas
 - **Botón 🔒 en ribbon** para sincronizar el vault manualmente antes de cerrar
@@ -102,7 +102,7 @@ En Azure Portal → tu Storage Account → CORS, agrega estas reglas:
 2. Activa el plugin en Obsidian
 3. Ingresa tu passphrase — baja todo de Azure y descifra automáticamente
 
-> La configuración de Azure (Storage Account, Container, SAS Token) se guarda en `.obsidian/plugins/cryptosync/data.json` y no viaja con el vault. Deberás ingresarla nuevamente en cada dispositivo nuevo.
+> La configuración de Azure se guarda cifrada en `.obsidian/plugins/cryptosync/data.json` con tu passphrase. Incluso si copias ese archivo a otro dispositivo, no será legible sin la passphrase correcta. Deberás ingresar las credenciales nuevamente en cada dispositivo nuevo.
 
 ## Flujo de trabajo
 
@@ -168,7 +168,7 @@ cryptosync/
 └── manifest.json     ← metadata
 
 .obsidian/plugins/cryptosync/
-└── data.json         ← configuración Azure (local, no viaja con el vault)
+└── data.json         ← credenciales Azure cifradas con tu passphrase + checksums locales
 
 .cryptosync/          ← datos del vault (viaja con el vault)
 ├── vaultsync.enc     ← canary de verificación de passphrase
@@ -209,7 +209,7 @@ El script lee el mapa, descifra cada archivo y reconstruye la estructura origina
 
 ## Notas de implementación
 
-**Derivación de clave:** PBKDF2-SHA256 con 250.000 iteraciones — coste mínimo recomendado por OWASP 2023. Cada intento de fuerza bruta cuesta ~300ms en hardware moderno, haciendo inviable el ataque por diccionario sobre cualquier passphrase razonablemente aleatoria. Se eligió sobre Argon2id para evitar dependencias externas, ya que PBKDF2 está disponible de forma nativa en la Web Crypto API que Obsidian expone.
+**Derivación de clave:** PBKDF2-SHA256 con 250.000 iteraciones coste mínimo recomendado por OWASP 2023. Cada intento de fuerza bruta cuesta ~300ms en hardware moderno, haciendo inviable el ataque por diccionario sobre cualquier passphrase razonablemente aleatoria. Se eligió sobre Argon2id para evitar dependencias externas, ya que PBKDF2 está disponible de forma nativa en la Web Crypto API que Obsidian expone.
 
 **Hash de rutas:** Cada segmento de ruta se hashea con SHA-256 y se trunca a 16 caracteres hexadecimales (64 bits). El birthday paradox implica colisión al 50% a partir de ~4.300 millones de segmentos únicos, por lo que en cualquier vault de uso personal el riesgo es prácticamente inexistente.
 
@@ -220,6 +220,8 @@ El script lee el mapa, descifra cada archivo y reconstruye la estructura origina
 Al sincronizar, si `localChecksums[hash] === remoteChecksums[hash]` el contenido es idéntico y no se sube ni descarga nada. Si existe un archivo legacy `cryptosync-checksums.json` en claro de una versión anterior, el plugin lo migra automáticamente al formato cifrado al primer sync.
 
 **Sin rollback en cifrado parcial:** Si `encryptVault()` falla a mitad de camino por un error de disco, algunos archivos quedarán cifrados y otros en claro. Si esto ocurre, vuelve a abrir Obsidian e ingresa tu passphrase — el plugin retomará desde el estado actual y completará el proceso.
+
+**Credenciales cifradas (`data.json`):** El Storage Account, Container y SAS Token se cifran con AES-GCM usando la passphrase del vault antes de escribirse en `data.json`. Al arrancar, el plugin pide la passphrase primero y solo entonces descifra las credenciales en memoria. Si existe un `data.json` legacy con credenciales en claro (versión anterior), el plugin las migra automáticamente al formato cifrado en el primer arranque. Nunca se escriben en claro en disco a partir de la versión 1.1.0.
 
 **Passphrase en memoria:** La passphrase se mantiene en RAM mientras Obsidian está abierto. Se limpia automáticamente al descargar el plugin o al presionar 🔒. Nunca se escribe en disco.
 

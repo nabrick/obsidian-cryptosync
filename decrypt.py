@@ -42,7 +42,8 @@ def verify_passphrase(vault_path: Path, passphrase: str) -> bool:
     canary_file = vault_path / CANARY_PATH
     if not canary_file.exists():
         print(f"Error: no se encontró el canary en {canary_file}")
-        return False
+        print("El vault puede estar corrupto o no fue creado con CryptoSync.")
+        sys.exit(1)
     try:
         data  = canary_file.read_bytes()
         plain = decrypt_buffer(passphrase, data)
@@ -83,7 +84,7 @@ def decrypt_vault(vault_path: Path, output_path: Path, passphrase: str):
         enc_file = vault_path / hashed_path
 
         if not enc_file.exists():
-            print(f"  ⚠ No encontrado: {hashed_path}")
+            print(f"  ⚠ Archivo cifrado no encontrado: {hashed_path} → {original_path}")
             errors += 1
             continue
 
@@ -101,9 +102,9 @@ def decrypt_vault(vault_path: Path, output_path: Path, passphrase: str):
             errors += 1
 
     print(f"\n{'─'*50}")
-    print(f"✓ {success} archivos descifrados")
+    print(f"{success} archivos descifrados")
     if errors:
-        print(f"✗ {errors} errores")
+        print(f"{errors} errores — algunos archivos pueden estar corruptos o incompletos")
     print(f"Salida: {output_path}")
 
 
@@ -136,18 +137,34 @@ def main():
         print("Asegúrate de apuntar a la raíz del vault.")
         sys.exit(1)
 
+    if vault_path == output_path:
+        print("Error: --output no puede ser el mismo directorio que --vault.")
+        sys.exit(1)
+
+    try:
+        output_path.resolve().relative_to(vault_path.resolve())
+        print("Error: --output no puede estar dentro del vault.")
+        sys.exit(1)
+    except ValueError:
+        pass
+
     print(f"\nVault:  {vault_path}")
     print(f"Salida: {output_path}\n")
 
-    # Pedir passphrase
-    passphrase = getpass.getpass("Passphrase: ")
+    ## Tres intentos para passphrase
+    passphrase = None
+    for attempt in range(1, 4):
+        candidate = getpass.getpass(f"Passphrase (intento {attempt}/3): ")
+        print("\nVerificando passphrase...")
+        if verify_passphrase(vault_path, candidate):
+            print("✓ Passphrase correcta\n")
+            passphrase = candidate
+            break
+        print("✗ Passphrase incorrecta")
 
-    print("\nVerificando passphrase...")
-    if not verify_passphrase(vault_path, passphrase):
-        print("✗ Passphrase incorrecta.")
+    if passphrase is None:
+        print("\nDemasiados intentos fallidos.")
         sys.exit(1)
-
-    print("✓ Passphrase correcta\n")
     decrypt_vault(vault_path, output_path, passphrase)
 
 if __name__ == "__main__":
