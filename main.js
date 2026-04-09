@@ -118,16 +118,10 @@ class AzureProvider {
     if (!res.ok) throw new Error(`Azure list error: ${res.status}`);
     const text = await res.text();
 
+    const doc   = new DOMParser().parseFromString(text, "text/xml");
+    const nodes = doc.querySelectorAll("Name");
     const names = [];
-    let cursor  = 0;
-    while (true) {
-      const start = text.indexOf('<Name>', cursor);
-      if (start === -1) break;
-      const end = text.indexOf('</Name>', start);
-      if (end === -1) break;
-      names.push(text.slice(start + 6, end));
-      cursor = end + 7;
-    }
+    nodes.forEach(n => names.push(n.textContent));
     return names;
   }
 
@@ -490,6 +484,11 @@ class VaultSyncPlugin extends Plugin {
 
   async showLockAndCloseModal() {
     const modal = new LockAndCloseModal(this.app, async () => {
+      // Cancelar debounce pendientes antes de cifrar
+      for (const key of Object.keys(this.debounceTimers)) {
+        clearTimeout(this.debounceTimers[key]);
+        delete this.debounceTimers[key];
+      }
       await this.encryptVault();
       this.clearPassphrase();
     });
@@ -596,8 +595,6 @@ class VaultSyncPlugin extends Plugin {
         if (localHash) this.remoteChecksums[hashedPath] = localHash;
 
         this.dirtyFiles.delete(hashedPath);
-        // .enc subido — eliminar copia local para mantener vault limpio
-        await this.app.vault.adapter.remove(hashedPath).catch(() => {});
         uploaded++;
       } catch (e) {
         console.error(`CryptoSync: error subiendo ${hashedPath}`, e);
@@ -787,65 +784,45 @@ class VaultSyncPlugin extends Plugin {
 
   async encryptFile(file) {
     if (!this.passphrase) return;
+    if (!this.storage) return;
     if (!shouldEncrypt(file.path)) return;
     if (file.path.endsWith(".enc")) return;
 
     try {
       const hashedPath  = await hashPath(file.path);
-      const dir         = hashedPath.split("/").slice(0, -1).join("/");
-      if (dir) await this.app.vault.adapter.mkdir(dir);
-
       const plain       = await this.app.vault.adapter.readBinary(file.path);
       const contentHash = await hashContent(plain);
 
       if (this.localChecksums[hashedPath] === contentHash) {
-        console.log(`CryptoSync: sin cambios de contenido, saltando → ${hashedPath}`);
+        console.log(`CryptoSync: sin cambios, saltando → ${hashedPath}`);
+        return;
+      }
+
+      if (!this.remoteChecksums[hashedPath]) {
+        await this.loadRemoteChecksums();
+      }
+      if (this.remoteChecksums[hashedPath] === contentHash) {
+        console.log(`CryptoSync: remoto ya actualizado, saltando → ${hashedPath}`);
+        this.localChecksums[hashedPath] = contentHash;
+        await this.saveLocalChecksums();
         return;
       }
 
       const encBuffer = await encryptBuffer(this.passphrase, plain);
-      await this.app.vault.adapter.writeBinary(hashedPath, encBuffer);
+      await this.storage.uploadFile(hashedPath, encBuffer);
 
       this.pathMap[hashedPath] = file.path;
       await this.saveMap();
 
-      this.localChecksums[hashedPath] = contentHash;
-
-      // Subida a Azure con resiliencia offline
-      // Si falla la conexión, el archivo queda en dirtyFiles y se reintenta.
-      if (this.storage) {
-        if (!this.remoteChecksums[hashedPath]) {
-          await this.loadRemoteChecksums();
-        }
-        if (this.remoteChecksums[hashedPath] !== contentHash) {
-          try {
-            await this.storage.uploadFile(hashedPath, encBuffer);
-            this.remoteChecksums[hashedPath] = contentHash;
-            await this.saveRemoteChecksums();
-            // .enc subido — ya no necesita vivir en disco mientras el vault está abierto
-            await this.app.vault.adapter.remove(hashedPath);
-            await this.removeEmptyFolders();
-            new Notice("↑ Sincronizado con Azure", 3000);
-          } catch (uploadErr) {
-            console.warn(`CryptoSync: sin conexión, encolando para retry → ${hashedPath}`);
-            this.dirtyFiles.add(hashedPath);
-            this.scheduleRetry();
-            // No eliminar el .enc — uploadDirtyFiles lo necesitará para el retry
-          }
-        } else {
-          // Remoto ya está actualizado — el .enc local tampoco es necesario
-          await this.app.vault.adapter.remove(hashedPath).catch(() => {});
-          await this.removeEmptyFolders();
-          console.log(`CryptoSync: remoto ya actualizado, saltando subida → ${hashedPath}`);
-        }
-      }
-
-      // Siempre guardar checksums locales, con o sin conexión
+      this.localChecksums[hashedPath]  = contentHash;
+      this.remoteChecksums[hashedPath] = contentHash;
+      await this.saveRemoteChecksums();
       await this.saveLocalChecksums();
 
-      console.log(`CryptoSync: cifrado local → ${hashedPath}`);
+      new Notice("↑ Sincronizado con Azure", 3000);
+      console.log(`CryptoSync: sincronizado → ${hashedPath}`);
     } catch (e) {
-      console.error(`CryptoSync: error en encryptFile ${file.path}`, e);
+      console.warn(`CryptoSync: error en debounce, se cifrará al presionar el candado → ${file.path}`);
     }
   }
 
@@ -856,7 +833,6 @@ class VaultSyncPlugin extends Plugin {
     if (!newPassphrase) throw new Error("La nueva passphrase no puede estar vacía");
     if (newPassphrase === oldPassphrase) throw new Error("La nueva passphrase debe ser diferente a la actual");
 
-    // 1. Actualizar passphrase en memoria
     this.passphrase = newPassphrase;
 
     if (this.cachedCreds) {
