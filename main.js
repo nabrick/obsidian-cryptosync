@@ -327,8 +327,21 @@ class VaultSyncPlugin extends Plugin {
     });
 
     this.app.workspace.onLayoutReady(async () => {
-      await this.askPassphrase();
+      const { isFirstTime } = await this.askPassphrase();
       await this.loadConfig();
+
+      if (isFirstTime) {
+        await this.showProgressModal("Configurando vault por primera vez...", async () => {
+          await this.encryptVault();
+          await this.decryptVaultLocal();
+        });
+      } else {
+        await this.showProgressModal("Descifrando vault...", async () => {
+          await this.decryptVault();
+        });
+      }
+
+      new Notice("CryptoSync: listo ✓");
       this.checkTokenExpiry();
     });
   }
@@ -374,22 +387,13 @@ class VaultSyncPlugin extends Plugin {
 
         if (isFirstTime) {
           this.passphrase = passphrase;
-          await this.showProgressModal("Configurando vault por primera vez...", async () => {
-            await this.encryptVault();
-            await this.createCanary(passphrase);
-            await this.decryptVaultLocal();
-          });
-          new Notice("CryptoSync: listo ✓");
-          resolve();
+          await this.createCanary(passphrase);
+          resolve({ isFirstTime: true });
         } else {
           const ok = await this.checkCanary(passphrase);
           if (ok) {
             this.passphrase = passphrase;
-            await this.showProgressModal("Descifrando vault...", async () => {
-              await this.decryptVault();
-            });
-            new Notice("CryptoSync: listo ✓");
-            resolve();
+            resolve({ isFirstTime: false });
           } else {
             new Notice("Passphrase incorrecta, intenta de nuevo");
             await this.askPassphrase().then(resolve);
@@ -565,7 +569,7 @@ class VaultSyncPlugin extends Plugin {
   }
 
   async uploadDirtyFiles() {
-    if (!this.storage || this.dirtyFiles.size === 0) return;
+    if (!this.storage || this.dirtyFiles.size === 0) return 0;
     new Notice(`CryptoSync: subiendo ${this.dirtyFiles.size} archivo(s)...`);
     await this.loadRemoteChecksums();
     let uploaded = 0;
@@ -670,6 +674,9 @@ class VaultSyncPlugin extends Plugin {
   async decryptVault() {
     if (!this.passphrase) return;
 
+    // Cargar el mapa antes del loop de conflictos para que originalPath esté disponible
+    await this.loadMap();
+
     if (this.storage) {
       new Notice("CryptoSync: sincronizando con Azure...");
       try {
@@ -754,9 +761,11 @@ class VaultSyncPlugin extends Plugin {
         console.error("CryptoSync: error bajando de Azure", e);
         new Notice("CryptoSync: error de conexión con Azure, usando copia local");
       }
+
+      // Recargar el mapa por si Azure actualizó MAP_LOCAL durante la sincronización
+      await this.loadMap();
     }
 
-    await this.loadMap();
     let count = 0;
 
     for (const [hashedPath, originalPath] of Object.entries(this.pathMap)) {
@@ -822,7 +831,9 @@ class VaultSyncPlugin extends Plugin {
       new Notice("↑ Sincronizado con Azure", 3000);
       console.log(`CryptoSync: sincronizado → ${hashedPath}`);
     } catch (e) {
-      console.warn(`CryptoSync: error en debounce, se cifrará al presionar el candado → ${file.path}`);
+      console.warn(`CryptoSync: error en debounce, reintentando en 30s → ${file.path}`);
+      this.dirtyFiles.add(await hashPath(file.path));
+      this.scheduleRetry();
     }
   }
 
