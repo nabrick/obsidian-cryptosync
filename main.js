@@ -118,7 +118,7 @@ class AzureProvider {
     if (!res.ok) throw new Error(`Azure list error: ${res.status}`);
     const text = await res.text();
 
-    const doc   = new DOMParser().parseFromString(text, "text/xml");
+    const doc = new DOMParser().parseFromString(text, "text/xml");
     const nodes = doc.querySelectorAll("Name");
     const names = [];
     nodes.forEach(n => names.push(n.textContent));
@@ -177,6 +177,7 @@ async function listAllFiles(adapter, dir = "") {
 function shouldEncrypt(path) {
   if (path.startsWith(".obsidian/"))  return false;
   if (path.startsWith(".cryptosync/")) return false;
+  if (path.startsWith(".trash/")) return false;
   const ext = "." + path.split(".").pop().toLowerCase();
   return ENCRYPT_EXTENSIONS.includes(ext);
 }
@@ -209,18 +210,18 @@ class VaultSyncPlugin extends Plugin {
           return false;
         }
         try {
-          const creds    = await decryptCredentials(this.passphrase, config.encryptedCredentials);
+          const creds = await decryptCredentials(this.passphrase, config.encryptedCredentials);
           storageAccount = creds.storageAccount;
-          container      = creds.container;
-          sasToken       = creds.sasToken;
+          container = creds.container;
+          sasToken = creds.sasToken;
         } catch (e) {
           console.error("CryptoSync: error descifrando credenciales", e);
           return false;
         }
       } else if (config.storageAccount) {
         storageAccount = config.storageAccount;
-        container      = config.container;
-        sasToken       = config.sasToken;
+        container = config.container;
+        sasToken = config.sasToken;
         if (this.passphrase) {
           console.log("CryptoSync: migrando credenciales a formato cifrado...");
           await this.saveCredentials({ storageAccount, container, sasToken });
@@ -233,9 +234,9 @@ class VaultSyncPlugin extends Plugin {
 
       if (!storageAccount || !container || !sasToken) return false;
 
-      this.cachedCreds    = { storageAccount, container, sasToken };
+      this.cachedCreds = { storageAccount, container, sasToken };
       this.cachedSasToken = sasToken;
-      this.storage        = new AzureProvider(storageAccount, container, sasToken);
+      this.storage = new AzureProvider(storageAccount, container, sasToken);
       this.localChecksums = config.localChecksums || {};
       console.log("CryptoSync: Azure configurado");
       return true;
@@ -255,7 +256,7 @@ class VaultSyncPlugin extends Plugin {
     delete config.sasToken;
     await this.saveData(config);
 
-    this.cachedCreds    = creds;
+    this.cachedCreds = creds;
     this.cachedSasToken = creds.sasToken;
   }
 
@@ -278,7 +279,7 @@ class VaultSyncPlugin extends Plugin {
       this.remoteChecksums = JSON.parse(new TextDecoder().decode(plain));
     } catch {
       try {
-        const buf  = await this.storage.downloadFile(CHECKSUMS_AZURE_KEY_OLD);
+        const buf = await this.storage.downloadFile(CHECKSUMS_AZURE_KEY_OLD);
         const text = new TextDecoder().decode(buf);
         this.remoteChecksums = JSON.parse(text);
         console.log("CryptoSync: migrando checksums a formato cifrado...");
@@ -406,7 +407,7 @@ class VaultSyncPlugin extends Plugin {
 
   clearPassphrase() {
     this.passphrase = null;
-    this.pathMap    = {};
+    this.pathMap = {};
   }
 
   checkTokenExpiry() {
@@ -462,6 +463,7 @@ class VaultSyncPlugin extends Plugin {
 
   onFileModified(file) {
     if (!this.passphrase) return;
+    if (file.path.startsWith(".trash/")) return;
 
     clearTimeout(this.debounceTimers[file.path]);
 
@@ -512,10 +514,37 @@ class VaultSyncPlugin extends Plugin {
     });
   }
 
+  // Elimina todos los archivos de .trash antes de cifrar/subir
+  async purgeTrash() {
+    const trashDir = ".trash";
+    const exists = await this.app.vault.adapter.exists(trashDir);
+    if (!exists) return;
+    try {
+      const trashFiles = await listAllFiles(this.app.vault.adapter, trashDir);
+      for (const filePath of trashFiles) {
+        try {
+          await this.app.vault.adapter.remove(filePath);
+          console.log(`CryptoSync: eliminado de .trash → ${filePath}`);
+        } catch (e) {
+          console.warn(`CryptoSync: no se pudo eliminar ${filePath}`, e);
+        }
+      }
+      // Eliminar la carpeta .trash vacía
+      await this.app.vault.adapter.rmdir(trashDir, true);
+      console.log("CryptoSync: .trash purgada");
+    } catch (e) {
+      console.warn("CryptoSync: error purgando .trash", e);
+    }
+  }
+
   async encryptVault() {
     if (!this.passphrase) return;
+
+    // Eliminar .trash antes de cifrar y subir
+    await this.purgeTrash();
+
     const allFiles = await listAllFiles(this.app.vault.adapter);
-    let count      = 0;
+    let count = 0;
 
     for (const filePath of allFiles) {
       if (!shouldEncrypt(filePath)) continue;
@@ -523,7 +552,7 @@ class VaultSyncPlugin extends Plugin {
 
       try {
         const hashedPath = await hashPath(filePath);
-        const dir        = hashedPath.split("/").slice(0, -1).join("/");
+        const dir = hashedPath.split("/").slice(0, -1).join("/");
         if (dir) await this.app.vault.adapter.mkdir(dir);
 
         const plain = await this.app.vault.adapter.readBinary(filePath);
@@ -577,6 +606,12 @@ class VaultSyncPlugin extends Plugin {
     for (const hashedPath of this.dirtyFiles) {
       if (hashedPath.startsWith(".obsidian/"))   continue;
       if (hashedPath.startsWith(".cryptosync/")) continue;
+      // Saltar archivos que provengan de .trash (el original path puede haberlo sido)
+      const originalPath = this.pathMap[hashedPath];
+      if (originalPath && originalPath.startsWith(".trash/")) {
+        this.dirtyFiles.delete(hashedPath);
+        continue;
+      }
       try {
         const localHash  = this.localChecksums[hashedPath];
         const remoteHash = this.remoteChecksums[hashedPath];
@@ -630,7 +665,8 @@ class VaultSyncPlugin extends Plugin {
     const sorted = folders
       .filter(f => f.path !== "/" && f.path !== ""
         && !f.path.startsWith(".obsidian")
-        && !f.path.startsWith(".cryptosync"))
+        && !f.path.startsWith(".cryptosync")
+        && !f.path.startsWith(".trash"))
       .sort((a, b) => b.path.split("/").length - a.path.split("/").length);
 
     for (const folder of sorted) {
@@ -657,7 +693,7 @@ class VaultSyncPlugin extends Plugin {
         const dir = originalPath.split("/").slice(0, -1).join("/");
         if (dir) await this.app.vault.adapter.mkdir(dir);
         const encrypted = await this.app.vault.adapter.readBinary(hashedPath);
-        const plain     = await decryptBuffer(this.passphrase, encrypted);
+        const plain = await decryptBuffer(this.passphrase, encrypted);
         await this.app.vault.adapter.writeBinary(originalPath, plain);
         await this.app.vault.adapter.remove(hashedPath);
         count++;
@@ -683,14 +719,14 @@ class VaultSyncPlugin extends Plugin {
         await this.loadRemoteChecksums();
 
         const remoteFiles = await this.storage.listFiles();
-        let conflicts     = 0;
+        let conflicts = 0;
 
         for (const hashedPath of remoteFiles) {
-          if (hashedPath.startsWith("backup/"))       continue;
-          if (hashedPath.startsWith(".obsidian/"))    continue;
-          if (hashedPath === CANARY_PATH)             continue;
-          if (hashedPath === MAP_AZURE_KEY)           continue;
-          if (hashedPath === CHECKSUMS_AZURE_KEY)     continue;
+          if (hashedPath.startsWith("backup/")) continue;
+          if (hashedPath.startsWith(".obsidian/")) continue;
+          if (hashedPath === CANARY_PATH) continue;
+          if (hashedPath === MAP_AZURE_KEY) continue;
+          if (hashedPath === CHECKSUMS_AZURE_KEY) continue;
           if (hashedPath === CHECKSUMS_AZURE_KEY_OLD) continue;
 
           const remoteHash   = this.remoteChecksums[hashedPath];
@@ -727,11 +763,11 @@ class VaultSyncPlugin extends Plugin {
 
           if (localAlsoChanged) {
             if (originalPath) {
-              const remoteBuf    = await this.storage.downloadFile(hashedPath);
-              const remotePlain  = await decryptBuffer(this.passphrase, remoteBuf);
-              const ext          = originalPath.includes(".") ? "." + originalPath.split(".").pop() : "";
-              const base         = originalPath.slice(0, originalPath.length - ext.length);
-              const date         = new Date().toISOString().slice(0, 10);
+              const remoteBuf = await this.storage.downloadFile(hashedPath);
+              const remotePlain = await decryptBuffer(this.passphrase, remoteBuf);
+              const ext = originalPath.includes(".") ? "." + originalPath.split(".").pop() : "";
+              const base = originalPath.slice(0, originalPath.length - ext.length);
+              const date = new Date().toISOString().slice(0, 10);
               const conflictPath = `${base}-conflicto-${date}${ext}`;
               await this.app.vault.adapter.writeBinary(conflictPath, remotePlain);
               conflicts++;
@@ -777,7 +813,7 @@ class VaultSyncPlugin extends Plugin {
         if (dir) await this.app.vault.adapter.mkdir(dir);
 
         const encrypted = await this.app.vault.adapter.readBinary(hashedPath);
-        const plain     = await decryptBuffer(this.passphrase, encrypted);
+        const plain = await decryptBuffer(this.passphrase, encrypted);
         await this.app.vault.adapter.writeBinary(originalPath, plain);
         await this.app.vault.adapter.remove(hashedPath);
         count++;
@@ -798,8 +834,8 @@ class VaultSyncPlugin extends Plugin {
     if (file.path.endsWith(".enc")) return;
 
     try {
-      const hashedPath  = await hashPath(file.path);
-      const plain       = await this.app.vault.adapter.readBinary(file.path);
+      const hashedPath = await hashPath(file.path);
+      const plain = await this.app.vault.adapter.readBinary(file.path);
       const contentHash = await hashContent(plain);
 
       if (this.localChecksums[hashedPath] === contentHash) {
@@ -850,7 +886,7 @@ class VaultSyncPlugin extends Plugin {
       await this.saveCredentials(this.cachedCreds);
     }
 
-    const plain     = new TextEncoder().encode(CANARY_TEXT);
+    const plain = new TextEncoder().encode(CANARY_TEXT);
     const encrypted = await encryptBuffer(this.passphrase, plain);
     await this.app.vault.adapter.writeBinary(CANARY_PATH, encrypted);
 
@@ -868,7 +904,7 @@ class VaultSyncPlugin extends Plugin {
     new Notice("CryptoSync: creando backup en Azure...");
 
     const azureFiles = await this.storage.listFiles();
-    const toBackup   = azureFiles.filter(f =>
+    const toBackup = azureFiles.filter(f =>
       !f.startsWith("backup/") &&
       f !== MAP_AZURE_KEY
     );
@@ -935,7 +971,7 @@ class VaultSyncPlugin extends Plugin {
       }
 
       const prefix = `backup/${date}/`;
-      let copied   = 0;
+      let copied = 0;
 
       for (const backupPath of backupFiles) {
         const rootPath = backupPath.slice(prefix.length);
@@ -1031,12 +1067,12 @@ class LockAndCloseModal extends Modal {
     contentEl.empty();
     contentEl.createEl("h2", { text: "CryptoSync", cls: "cryptosync-title" });
 
-    const wrap     = contentEl.createDiv({ cls: "cryptosync-progress" });
-    this.statusEl  = wrap.createEl("p", { text: "⏳ Cifrando vault...", cls: "cryptosync-status" });
+    const wrap = contentEl.createDiv({ cls: "cryptosync-progress" });
+    this.statusEl = wrap.createEl("p", { text: "⏳ Cifrando vault...", cls: "cryptosync-status" });
     this.spinnerEl = wrap.createDiv({ cls: "cryptosync-spinner" });
     this.spinnerEl.setText("⏳");
-    this.hintEl    = wrap.createEl("p", { text: "No cierres ni muevas archivos..." });
-    this.btnEl     = contentEl.createDiv();
+    this.hintEl = wrap.createEl("p", { text: "No cierres ni muevas archivos..." });
+    this.btnEl = contentEl.createDiv();
 
     this.onEncryptDone().then(() => {
       this.statusEl.setText("🔒 Vault cifrado");
@@ -1142,10 +1178,10 @@ class CryptoSyncSettingTab extends PluginSettingTab {
 
   expiryStatus(days) {
     if (days === null) return { icon: "🔴", text: "No se pudo leer la fecha" };
-    if (days <= 0)     return { icon: "🔴", text: "Token vencido" };
-    if (days <= 3)     return { icon: "🔴", text: `Vence en ${days} días — ¡renueva ahora!` };
-    if (days <= 5)     return { icon: "🟠", text: `Vence en ${days} días — renueva pronto` };
-    if (days <= 10)    return { icon: "🟡", text: `Vence en ${days} días` };
+    if (days <= 0) return { icon: "🔴", text: "Token vencido" };
+    if (days <= 3) return { icon: "🔴", text: `Vence en ${days} días — ¡renueva ahora!` };
+    if (days <= 5) return { icon: "🟠", text: `Vence en ${days} días — renueva pronto` };
+    if (days <= 10) return { icon: "🟡", text: `Vence en ${days} días` };
     return { icon: "🟢", text: `Vence el ${this.parseSasExpiry(this._currentToken)?.toLocaleDateString()}` };
   }
 
@@ -1155,8 +1191,8 @@ class CryptoSyncSettingTab extends PluginSettingTab {
 
     let config = {
       storageAccount: this.plugin.cachedCreds?.storageAccount || "",
-      container:      this.plugin.cachedCreds?.container      || "",
-      sasToken:       this.plugin.cachedCreds?.sasToken        || ""
+      container: this.plugin.cachedCreds?.container || "",
+      sasToken: this.plugin.cachedCreds?.sasToken || ""
     };
     this._currentToken = config.sasToken;
     let showToken = false;
@@ -1203,7 +1239,7 @@ class CryptoSyncSettingTab extends PluginSettingTab {
         text.setPlaceholder("sv=2022-11-02&ss=b&...")
             .setValue(config.sasToken)
             .onChange(val => {
-              config.sasToken    = val;
+              config.sasToken = val;
               this._currentToken = val;
               updateExpiryInfo(val);
             });
@@ -1221,7 +1257,7 @@ class CryptoSyncSettingTab extends PluginSettingTab {
 
     const updateExpiryInfo = (token) => {
       const expiry = this.parseSasExpiry(token);
-      const days   = this.daysUntilExpiry(expiry);
+      const days = this.daysUntilExpiry(expiry);
       const status = this.expiryStatus(days);
       expiryEl.empty();
       const row = expiryEl.createDiv({ cls: "cryptosync-expiry-row" });
@@ -1263,8 +1299,8 @@ class CryptoSyncSettingTab extends PluginSettingTab {
       try {
         await this.plugin.saveCredentials({
           storageAccount: config.storageAccount,
-          container:      config.container,
-          sasToken:       config.sasToken
+          container: config.container,
+          sasToken: config.sasToken
         });
         await this.plugin.loadConfig();
         saveBtn.setText("✓ Guardado");
@@ -1301,7 +1337,7 @@ class CryptoSyncSettingTab extends PluginSettingTab {
     const backupStatusEl = backupCard.createDiv({ cls: "cryptosync-backup-status" });
 
     const refreshBackupInfo = async () => {
-      const cfg        = await this.plugin.loadData() || {};
+      const cfg = await this.plugin.loadData() || {};
       const lastBackup = cfg.lastBackup;
       backupStatusEl.empty();
 
@@ -1327,10 +1363,7 @@ class CryptoSyncSettingTab extends PluginSettingTab {
         const info = backupStatusEl.createDiv({ cls: "cryptosync-backup-info" });
         info.createEl("div", { text: label, cls: "cryptosync-backup-label" });
         info.createEl("div", { text: lastBackup, cls: "cryptosync-backup-date" });
-        info.createEl("div", {
-          text: `Próxima actualización automática ${nextLabel}`,
-          cls: "cryptosync-backup-meta"
-        });
+        info.createEl("div", { text: `Próxima actualización automática ${nextLabel}`, cls: "cryptosync-backup-meta"});
       }
     };
 
@@ -1348,7 +1381,7 @@ class CryptoSyncSettingTab extends PluginSettingTab {
         .setButtonText("Restaurar backup")
         .setWarning()
         .onClick(async () => {
-          const cfg        = await this.plugin.loadData() || {};
+          const cfg = await this.plugin.loadData() || {};
           const lastBackup = cfg.lastBackup;
           if (!lastBackup) {
             new Notice("CryptoSync: no hay backup disponible todavía");
@@ -1386,8 +1419,8 @@ class ChangePassphraseModal extends Modal {
       cls: "cryptosync-subtitle"
     });
 
-    let oldPass  = "";
-    let newPass  = "";
+    let oldPass = "";
+    let newPass = "";
     let newPass2 = "";
 
     new Setting(contentEl)
