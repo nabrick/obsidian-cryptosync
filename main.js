@@ -582,11 +582,26 @@ class VaultSyncPlugin extends Plugin {
       const uploaded = await this.uploadDirtyFiles();
 
       // Backup automático cada 7 días
+      // Se consulta Azure directamente para que la fecha sea compartida entre
+      // todos los dispositivos, evitando que cada uno cree su propio backup.
       if (uploaded > 0) {
-        const config     = await this.loadData() || {};
-        const lastBackup = config.lastBackup ? new Date(config.lastBackup) : null;
-        const daysSince  = lastBackup
-          ? (Date.now() - lastBackup.getTime()) / (1000 * 60 * 60 * 24)
+        let lastBackupDate = null;
+        try {
+          const backupFiles = await this.storage.listFiles("backup/");
+          const dates = backupFiles
+            .map(f => { const m = f.match(/^backup\/(\d{4}-\d{2}-\d{2})\//); return m ? m[1] : null; })
+            .filter(Boolean);
+          if (dates.length > 0) {
+            dates.sort();
+            lastBackupDate = new Date(dates[dates.length - 1]);
+          }
+        } catch (e) {
+          // Si no se puede leer Azure, caer de vuelta al registro local
+          const config = await this.loadData() || {};
+          lastBackupDate = config.lastBackup ? new Date(config.lastBackup) : null;
+        }
+        const daysSince = lastBackupDate
+          ? (Date.now() - lastBackupDate.getTime()) / (1000 * 60 * 60 * 24)
           : Infinity;
         if (daysSince >= 7) {
           await this.createBackup();

@@ -1,4 +1,4 @@
-[![Version](https://img.shields.io/badge/version-1.2.0-lightgrey.svg)]()
+[![Version](https://img.shields.io/badge/version-1.2.1-lightgrey.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)]()
 [![Status](https://img.shields.io/badge/status-active-lightgrey.svg)]()
 

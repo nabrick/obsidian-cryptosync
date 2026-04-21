@@ -1,6 +1,6 @@
 {
     "name": "cryptosync",
-    "version": "1.2.0",
+    "version": "1.2.1",
     "description": "Cifra tu vault completo y lo sincroniza con la nube.",
     "main": "main.js",
     "scripts": {
