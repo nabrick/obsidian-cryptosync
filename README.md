@@ -1,4 +1,4 @@
-[![Version](https://img.shields.io/badge/version-1.2.1-lightgrey.svg)]()
+[![Version](https://img.shields.io/badge/version-1.3.0-lightgrey.svg)]()
 [![License](https://img.shields.io/badge/license-MIT-lightgrey.svg)]()
 [![Status](https://img.shields.io/badge/status-active-lightgrey.svg)]()
 
@@ -23,6 +23,7 @@ Los archivos en la nube son completamente ilegibles sin tu passphrase.
 - **Backup automático en Azure** snapshot cifrado cada 7 días, restaurable desde Settings
 - **Rotación de passphrase** cambia tu passphrase desde Settings sin perder datos
 - **Mapa cifrado** de hashes → paths originales para recuperación
+- **Re-sincronización completa** reconstruye Azure desde local si está desincronizado o corrupto
 - Interfaz adaptada a **móvil** (Android e iOS)
 
 ## Instalación

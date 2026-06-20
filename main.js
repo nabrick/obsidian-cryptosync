@@ -260,6 +260,29 @@ class VaultSyncPlugin extends Plugin {
     this.cachedSasToken = creds.sasToken;
   }
 
+  async forceResync() {
+  if (!this.passphrase) throw new Error("Vault bloqueado");
+  if (!this.storage) throw new Error("Azure no configurado");
+
+  // Borrar todo en Azure
+  new Notice("CryptoSync: limpiando Azure...");
+  const allRemote = await this.storage.listFiles();
+  for (const f of allRemote) {
+    await this.storage.deleteFile(f).catch(() => {});
+  }
+
+  // Limpiar estado local
+  this.localChecksums = {};
+  this.remoteChecksums = {};
+  this.pathMap = {};
+  await this.saveLocalChecksums();
+
+  // Cifrar, subir, descifrar, backup
+  await this.encryptVault();
+  await this.decryptVaultLocal();
+  await this.createBackup();
+}
+
   // Checksums
   async saveLocalChecksums() {
     try {
@@ -873,6 +896,13 @@ class VaultSyncPlugin extends Plugin {
 
       this.pathMap[hashedPath] = file.path;
       await this.saveMap();
+  
+      try {
+        const mapBuf = await this.app.vault.adapter.readBinary(MAP_LOCAL);
+        await this.storage.uploadFile(MAP_AZURE_KEY, mapBuf);
+      } catch (e) {
+        console.error("CryptoSync: error subiendo mapa en debounce", e);
+      }
 
       this.localChecksums[hashedPath]  = contentHash;
       this.remoteChecksums[hashedPath] = contentHash;
@@ -1411,6 +1441,26 @@ class CryptoSyncSettingTab extends PluginSettingTab {
               } catch (e) {
                 new Notice(`CryptoSync: error restaurando backup — ${e.message}`);
               }
+            }
+          ).open();
+        })
+      );
+    
+    new Setting(backupCard)
+      .setName("Re-sincronización completa")
+      .setDesc("Borra Azure y lo reconstruye desde tu vault local. Úsalo si Azure está desincronizado o corrupto.")
+      .addButton(btn => btn
+        .setButtonText("Re-sincronizar")
+        .setWarning()
+        .onClick(() => {
+          new ConfirmModal(this.app,
+            "¿Borrar todo Azure y reconstruirlo desde local? Esto incluye archivos, mapa, checksums y backup.",
+            async () => {
+              await this.plugin.showProgressModal("Re-sincronizando vault...", async () => {
+                await this.plugin.forceResync();
+              });
+              new Notice("CryptoSync: re-sincronización completa ✓");
+              await refreshBackupInfo();
             }
           ).open();
         })
