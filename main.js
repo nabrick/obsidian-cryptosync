@@ -148,7 +148,7 @@ const MAP_LOCAL = `${CRYPTOSYNC_DIR}/vaultsync-map.enc`;
 const MAP_AZURE_KEY = "cryptosync-map.enc";
 const CANARY_TEXT = "vaultsync-ok";
 
-const ENCRYPT_EXTENSIONS = [".md", ".png", ".pdf", ".jpeg", ".jpg", ".mp4"];
+const ENCRYPT_EXTENSIONS = [".md", ".png", ".pdf", ".jpeg", ".jpg", ".mp4", ".xlsx"];
 
 // Sección: Checksums
 const CHECKSUMS_AZURE_KEY = "cryptosync-checksums.enc";
